@@ -1,0 +1,122 @@
+version: '3.8'
+
+services:
+  zookeeper:
+    container_name: zookeeper
+    image: quay.io/debezium/zookeeper:2.7
+    networks:
+      - streaming_network
+    ports:
+      - "2181:2181"
+      - "2888:2888"
+      - "3888:3888"
+  kafka:
+    container_name: kafka
+    image: quay.io/debezium/kafka:2.7
+    ports:
+      - "9092:9092"
+      - "29092:29092"
+    depends_on:
+      - zookeeper
+    environment:
+      - ZOOKEEPER_CONNECT=zookeeper:2181
+      - KAFKA_ADVERTISED_LISTENERS=LISTENER_EXT://localhost:29092,LISTENER_INT://kafka:9092
+      - KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=LISTENER_INT:PLAINTEXT,LISTENER_EXT:PLAINTEXT
+      - KAFKA_LISTENERS=LISTENER_INT://0.0.0.0:9092,LISTENER_EXT://0.0.0.0:29092
+      - KAFKA_INTER_BROKER_LISTENER_NAME=LISTENER_INT
+    networks:
+      - streaming_network
+
+  spark-master:
+    build: ./spark/master
+    container_name: spark-master
+    volumes:
+      - ./spark-jobs:/opt/jobs
+    environment:
+      - SPARK_MODE=master
+    ports:
+      - "8080:8080"
+      - "7077:7077"
+      - "4040:4040"
+    networks:
+      - streaming_network
+
+  spark-worker:
+    build: ./spark/worker
+    container_name: spark-worker
+    environment:
+      - SPARK_MODE=worker
+      - SPARK_MASTER_URL=spark://spark-master:7077
+    depends_on:
+      - spark-master
+    ports:
+      - "8081:8081"
+    networks:
+      - streaming_network
+
+  minio:
+    image: minio/minio:RELEASE.2024-06-13T22-53-53Z
+    container_name: minio
+    hostname: minio
+    restart: always
+    volumes:
+      - ./include/data/minio:/data
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: minio
+      MINIO_ROOT_PASSWORD: minio123
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:9000/minio/health/live" ]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+    networks:
+      - streaming_network
+
+  clickhouse:
+    container_name: clickhouse
+    image: clickhouse:latest
+    ports:
+      - "8123:8123"
+      - "9003:9003"
+    environment:
+      - CLICKHOUSE_USER=user
+      - CLICKHOUSE_PASSWORD=password
+    networks:
+      - streaming_network
+#    healthcheck:
+#      test: [ "CMD", "curl", "-f", "http://localhost:8123/clickhouse/health/live" ]
+#      interval: 30s
+#      timeout: 20s
+#      retries: 3
+
+  superset:
+    build:
+      context: ./superset
+      dockerfile: Dockerfile
+    environment:
+      SUPERSET_ADMIN: superset
+      SUPERSET_PASSWORD: superset123
+      SUPERSET_SECRET_KEY: secret
+    ports:
+      - "8088:8088"
+#    depends_on:
+#      clickhouse:
+#        condition: service_healthy
+    networks:
+      - streaming_network
+
+  producer:
+    container_name: producer
+    build:
+      context: ./producer
+      dockerfile: Dockerfile
+    networks:
+      - streaming_network
+    depends_on:
+      - kafka
+networks:
+  streaming_network:
